@@ -503,17 +503,23 @@ function considerCopy()
       MIRR_PATH=$(dirname "$MIRR_PATH")
       BASE_FILE_NAME=$(basename "$1")
 
+      if [ "$MIRR_PATH" == "." ]; then
+         MIRR_PATH=""
+      else
+         MIRR_PATH+="/"
+      fi
+
       if [ $DRY_RUN -eq 0 ]; then
          if [ ! -d "$DEST_DIR/$MIRR_PATH" ]; then
             mkdir -p "$DEST_DIR/$MIRR_PATH"
          fi
 
          mypr "Copying unaltered file $BASE_FILE_NAME..."
-         cp "$1" "$DEST_DIR/$MIRR_PATH/$BASE_FILE_NAME"
+         cp "$1" "$DEST_DIR/${MIRR_PATH}$BASE_FILE_NAME"
       else
          echo mkdir -p "$DEST_DIR/$MIRR_PATH"
 
-         echo cp "$1" "$DEST_DIR/$MIRR_PATH/$BASE_FILE_NAME"
+         echo cp "$1" "$DEST_DIR/${MIRR_PATH}$BASE_FILE_NAME"
       fi
    fi
 }
@@ -942,7 +948,13 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
          NEW_FILE_NAME+=".$NEW_TYPE"
       fi
 
-      ALTERED_FILE_REF="$DEST_DIR/$MIRR_PATH/$NEW_FILE_NAME"
+      if [ "$MIRR_PATH" == "." ]; then
+         MIRR_PATH=""
+      else
+         MIRR_PATH+="/"
+      fi
+
+      ALTERED_FILE_REF="$DEST_DIR/${MIRR_PATH}$NEW_FILE_NAME"
    fi
    IM_COMMAND+=" \"$ALTERED_FILE_REF\""
 
@@ -1060,7 +1072,7 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
             elif [ $FILE_MODE -eq $FILE_BESIDE ]; then
                cp "$ORIG_FILE_REF" "$(dirname $ORIG_FILE_REF)/$LABELED_FILE_NAME"
             elif [ $FILE_MODE -eq $FILE_MIRROR ]; then
-               cp "$FILE_REF" "$DEST_DIR/$MIRR_PATH/$LABELED_FILE_NAME"
+               cp "$FILE_REF" "$DEST_DIR/${MIRR_PATH}$LABELED_FILE_NAME"
             fi
          else
             if [ $FILE_MODE -eq $FILE_OVERWRITE ]; then
@@ -1068,7 +1080,7 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
             elif [ $FILE_MODE -eq $FILE_BESIDE ]; then
                echo cp "$ORIG_FILE_REF" "$(dirname $ORIG_FILE_REF)/$LABELED_FILE_NAME"
             elif [ $FILE_MODE -eq $FILE_MIRROR ]; then
-               echo cp "$FILE_REF" "$DEST_DIR/$MIRR_PATH/$LABELED_FILE_NAME"
+               echo cp "$FILE_REF" "$DEST_DIR/${MIRR_PATH}$LABELED_FILE_NAME"
             fi
          fi
       fi
