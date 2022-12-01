@@ -797,8 +797,28 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
    fi
    
    # Get basic image info
-   IMAGE_WIDTH=$(identify -format "%[fx:w]" "$FILE_REF")
-   IMAGE_HEIGHT=$(identify -format "%[fx:h]" "$FILE_REF")
+   IMAGE_WIDTH=$(identify -format "%[fx:w]" "$FILE_REF" 2> /dev/null)
+   IMAGE_HEIGHT=$(identify -format "%[fx:h]" "$FILE_REF" 2> /dev/null)
+   
+   if [ $? -ne 0 ]; then
+		myprd "Skipping image '$FILE_REF' because the size could not be obtained; ImageMagick error $?."
+		continue
+	fi
+	
+	# Animated GIFs return wildly erroneous dimensions and have not been tested with the operations this script offers, so skip them
+	if [ $FILE_SUFFIX == "gif" ]; then
+		FRAME_CT=$(identify "$FILE_REF" | wc -l | tr -d ' ')
+		if [ $FRAME_CT -gt 1 ]; then
+			myprd "Skipping animated GIF '$FILE_REF'."
+			continue
+		fi
+	fi
+	
+	# Avoid cases where image dimensions exceed 2^32, which is 10 digits long, because bash cannot handle them; it's likely that a number this large is an error, anyway
+	if [ "${#IMAGE_WIDTH}" -gt 9 ] || [ "${#IMAGE_HEIGHT}" -gt 9 ]; then
+	   myprd "Skipping image '$FILE_REF' because a dimension may exceed INTMAX."
+	   continue
+	fi
 
    # Apply width filter if requested
    if [ $SOURCE_WIDTH_FILTER -eq 1 ]; then
@@ -863,7 +883,7 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
    # If in print mode, just print file name and continue
    if [ $OPER_PRINT -eq 1 ]; then
       REL_PATH=$(trim "$FILE_REF" after first "$SOURCE_DIR/")
-      echo "Found file $REL_PATH."
+      echo "Found file '$REL_PATH'."
       continue
    fi
 
