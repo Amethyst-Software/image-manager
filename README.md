@@ -10,6 +10,8 @@ Here are the operations you can currently perform on the images which meet your 
 - Append the dimensions of the image to its file name.
 - Crop the image to a certain width and/or height.
 - Resize the image to a certain percentage, width and/or height.
+- Flip the image horizontally and/or vertically.
+- Rotate the image any number of degrees.
 - Convert the image to another format.
 
 ![Preview](https://github.com/Amethyst-Software/image-manager/blob/main/preview.png)

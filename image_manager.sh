@@ -4,10 +4,10 @@
 # Recursively searching a directory for images, you can filter for only images of
 # certain dimensions, a certain format, and a certain aspect ratio. You can print
 # the resulting file names to screen, label files with their dimensions, convert
-# the files to a new format, crop them and scale them. You can replace the original
-# images with your changed versions, save the altered versions beside the
-# originals, or save them in a mirrored directory. Call script without arguments
-# for usage details.
+# the files to a new format, crop them, flip them, rotate them and scale them. You
+# can replace the original images with your changed versions, save the altered
+# versions beside the originals, or save them in a mirrored directory. Call script
+# without arguments for usage details.
 # Requires ImageMagick to be installed.
 # Recommended width:
 # |---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----|
@@ -16,6 +16,8 @@ IFS="
 "
 
 ## CONSTANTS ##
+BIN_IDENTIFY="identify"
+BIN_CONVERT="convert"
 declare -a IMG_SUFF=(bmp dds gif jpeg jpg png tga tif tiff)
 COLS=$(tput cols)
 BOLD=$(tput bold)
@@ -33,10 +35,16 @@ CROP_ALIGN_H_RIGHT=3
 CROP_ALIGN_V_TOP=1
 CROP_ALIGN_V_CENTER=2
 CROP_ALIGN_V_BOTTOM=3
+FLIP_HORI=1
+FLIP_VERT=2
+FLIP_BOTH=3
 SCALE_WIDTH_ONLY=1
 SCALE_HEIGHT_ONLY=2
 SCALE_WIDTH_HEIGHT=3
 SCALE_PERCENT=4
+CHANGE_NONE=0
+CHANGE_LABEL_ONLY=1
+CHANGE_MODIFY=2
 
 ## SETTINGS VARIABLES ##
 FILE_MODE=0 # can be set to one of the FILE_* constants above
@@ -67,16 +75,21 @@ CROP_OFFSET_Y=0
 CROP_ALIGN_H=$CROP_ALIGN_H_LEFT # set to one of the CROP_ALIGN_H_* constants above
 CROP_ALIGN_V=$CROP_ALIGN_V_TOP # set to one of the CROP_ALIGN_V_* constants above
 CROP_TYPE=0 # can be set to one of the CROP_* constants above
+FLIP_TYPE=0 # can be set to one of the FLIP_* constants above
+ROTATE_DEG=0
 SCALE_WIDTH=0
 SCALE_HEIGHT=0
 SCALE_PERC=0
+SCALE_TYPE=0 # can be set to one of the SCALE_* constants above
 DEST_DIR=""
-OPER_PRINT=0 # boolean
+OPER_SEARCH=0 # boolean; only set to true if no operations below are selected by user
 OPER_LABEL=0 # boolean
 OPER_CONVERT=0 # boolean
 OPER_CROP=0 # boolean
+OPER_FLIP=0 # boolean
+OPER_ROTATE=0 # boolean
 OPER_SCALE=0 # boolean
-SCALE_TYPE=0 # can be set to one of the SCALE_* constants above
+CHANGE_TYPE=0 # can be set to one of the CHANGE_* constants above
 NEW_TYPE=""
 DRY_RUN=0 # boolean
 
@@ -131,11 +144,11 @@ function trim()
 }
 
 # Round a floating point number to an integer. If the argument passed in is not a
-# number, zero is returned.
+# number, the string "NaN" is returned.
 function round()
 {
    if [[ ! "$1" =~ ^-{0,1}[0-9]+\.{0,1}[0-9]*$ ]]; then
-      printf "0"
+      printf "NaN"
       return
    fi
 
@@ -164,7 +177,7 @@ function myprc()
    echo $1 | fmt -w $COLS -c
 }
 
-# For debug output, toggled on and off by --show-skips
+# For debug output, toggled on by --show-skips
 function myprd()
 {
    if [ $SHOW_SKIPS -eq 1 ]; then
@@ -244,6 +257,9 @@ function printHelp()
       of the top.
    Alternately, use _--crop-center-v_ to crop from the vertical center. The ex-
       planation of _--crop-center-h_ above applies here as well.
+   _--flip-h_ will mirror the image around the vertical axis.
+   _--flip-v_ will mirror the image around the horizontal axis.
+   _--rotate:NUM_ will rotate the image by this number of degrees.
    _--scale-percent:NUM_ will scale each image by this percentage of its size,
       e.g. _--scale-percent:50_ will reduce an image to 50% of its current size.
    _--scale-width:NUM_ and/or _--scale-height:NUM_ give the width and/or height to
@@ -277,11 +293,16 @@ function printHelp()
       whereas 16:9 is 1.77777…, a deviation of about 0.05%. The fuzziness is
       already set to a default of 1.0%, but you can set it higher or lower with
       this argument.
+
 |You also have the following arguments available for troubleshooting purposes:|
    _--dry-run_: Print out the command which would be run on each file instead of
       performing the command.
    _--show-skips_: Print name of each file that was excluded by the chosen
-      filters and the reason why it was excluded."
+      filters and the reason why it was excluded.
+   _--custom-identify_: The name of, or complete path to, the program that should
+      be used in place of 'identify'.
+   _--custom-convert_: The name of, or complete path to, the program that should
+      be used in place of 'convert'."
    myprf "$MAN_TEXT"
 }
 
@@ -298,7 +319,7 @@ function processOnlyArg()
       SOURCE_WIDTH_FILTER=1
       SOURCE_WIDTH_PX=$(trim "$1" after first :)
       SOURCE_WIDTH_PX=$(round $SOURCE_WIDTH_PX)
-      if [ -z $SOURCE_WIDTH_PX ] || [ $SOURCE_WIDTH_PX -lt 1 ]; then
+      if [ -z $SOURCE_WIDTH_PX ] || [ $SOURCE_WIDTH_PX == "NaN" ] || [ $SOURCE_WIDTH_PX -lt 1 ]; then
          mypr "Error 2: Failed to parse number in '--only-width-*:NUM' argument or NUM was less than 1."
          exit 2
       fi
@@ -323,7 +344,7 @@ function processOnlyArg()
       SOURCE_HEIGHT_FILTER=1
       SOURCE_HEIGHT_PX=$(trim "$1" after first :)
       SOURCE_HEIGHT_PX=$(round $SOURCE_HEIGHT_PX)
-      if [ -z $SOURCE_HEIGHT_PX ] || [ $SOURCE_HEIGHT_PX -lt 1 ]; then
+      if [ -z $SOURCE_HEIGHT_PX ] || [ $SOURCE_HEIGHT_PX == "NaN" ] || [ $SOURCE_HEIGHT_PX -lt 1 ]; then
          mypr "Error 4: Failed to parse number in '--only-height-*:NUM' argument or NUM was less than 1."
          exit 4
       fi
@@ -354,7 +375,7 @@ function processOnlyArg()
 	elif [[ $1 == *fuzz* ]]; then
       SOURCE_RATIO_FUZZ_PERC=$(trim "$1" after first :)
       SOURCE_RATIO_FUZZ_PERC=$(round $SOURCE_RATIO_FUZZ_PERC)
-      if [ -z $SOURCE_RATIO_FUZZ_PERC ] || [ $SOURCE_RATIO_FUZZ_PERC -lt 0 ] || [ $SOURCE_RATIO_FUZZ_PERC -gt 99 ]; then
+      if [ -z $SOURCE_RATIO_FUZZ_PERC ] || [ $SOURCE_RATIO_FUZZ_PERC == "NaN" ] || [ $SOURCE_RATIO_FUZZ_PERC -lt 0 ] || [ $SOURCE_RATIO_FUZZ_PERC -gt 99 ]; then
          mypr "Error 7: Failed to parse number in '--only-ratio-fuzz:NUM' argument or NUM was less than 0 or more than 99."
          exit 7
       fi
@@ -370,14 +391,14 @@ function processOnlyArg()
       RATIO_FULL=$(trim "$1" after first :)
       SOURCE_RATIO_W=$(trim "$RATIO_FULL" before first :)
       SOURCE_RATIO_W=$(round $SOURCE_RATIO_W)
-      if [ -z $SOURCE_RATIO_W ] || [ "$SOURCE_RATIO_W" -lt 1 ]; then
+      if [ -z $SOURCE_RATIO_W ] || [ $SOURCE_RATIO_W == "NaN" ] || [ "$SOURCE_RATIO_W" -lt 1 ]; then
          mypr "Error 8: Could not extract width component of aspect ratio from '--only-ratio:NUM:NUM' argument or width was less than 1."
          exit 8
       fi
 
       SOURCE_RATIO_H=$(trim "$RATIO_FULL" after first :)
       SOURCE_RATIO_H=$(round $SOURCE_RATIO_H)
-      if [ -z $SOURCE_RATIO_H ] || [ "$SOURCE_RATIO_H" -lt 1 ]; then
+      if [ -z $SOURCE_RATIO_H ] || [ $SOURCE_RATIO_H == "NaN" ] || [ "$SOURCE_RATIO_H" -lt 1 ]; then
          mypr "Error 9: Could not extract height component of aspect ratio from '--only-ratio:NUM:NUM' argument or height was less than 1."
          exit 9
       fi
@@ -398,7 +419,7 @@ function processCropArg()
    if [[ $1 == *width* ]]; then
       CROP_WIDTH=$(trim "$1" after first :)
       CROP_WIDTH=$(round $CROP_WIDTH)
-      if [ -z $CROP_WIDTH ] || [ $CROP_WIDTH -lt 1 ]; then
+      if [ -z $CROP_WIDTH ] || [ $CROP_WIDTH == "NaN" ] || [ $CROP_WIDTH -lt 1 ]; then
          mypr "Error 11: Failed to parse number in '--crop-width:NUM' argument or NUM was less than 1."
          exit 11
       fi
@@ -411,7 +432,7 @@ function processCropArg()
    elif [[ $1 == *height* ]]; then
       CROP_HEIGHT=$(trim "$1" after first :)
       CROP_HEIGHT=$(round $CROP_HEIGHT)
-      if [ -z $CROP_HEIGHT ] || [ $CROP_HEIGHT -lt 1 ]; then
+      if [ -z $CROP_HEIGHT ] || [ $CROP_HEIGHT == "NaN" ] || [ $CROP_HEIGHT -lt 1 ]; then
          mypr "Error 12: Failed to parse number in '--crop-height:NUM' argument or NUM was less than 1."
          exit 12
       fi
@@ -424,15 +445,15 @@ function processCropArg()
    elif [[ $1 == *offset-x* ]]; then
       CROP_OFFSET_X=$(trim "$1" after first :)
       CROP_OFFSET_X=$(round $CROP_OFFSET_X)
-      if [ -z $CROP_OFFSET_X ]; then
-         mypr "Error 13: Failed to parse number in '--crop-offset-x:NUM' argument."
+      if [ -z $CROP_OFFSET_X ] || [ $CROP_OFFSET_X == "NaN" ] || [ $CROP_OFFSET_X -eq 0 ]; then
+         mypr "Error 13: Failed to parse number in '--crop-offset-x:NUM' argument or NUM was 0, which does nothing."
          exit 13
       fi
    elif [[ $1 == *offset-y* ]]; then
       CROP_OFFSET_Y=$(trim "$1" after first :)
       CROP_OFFSET_Y=$(round $CROP_OFFSET_Y)
-      if [ -z $CROP_OFFSET_Y ]; then
-         mypr "Error 14: Failed to parse number in '--crop-offset-y:NUM' argument."
+      if [ -z $CROP_OFFSET_Y ] || [ $CROP_OFFSET_Y == "NaN" ] || [ $CROP_OFFSET_Y -eq 0 ]; then
+         mypr "Error 14: Failed to parse number in '--crop-offset-y:NUM' argument or NUM was 0, which does nothing."
          exit 14
       fi
    elif [[ $1 == *align-right* ]]; then
@@ -449,13 +470,44 @@ function processCropArg()
    fi
 }
 
+# Consider an argument starting with "--flip" in light of possible previous "--flip" argument
+function processFlipArg()
+{
+   if [ "$1" == "--flip-h" ]; then
+      if [ $FLIP_TYPE -eq $FLIP_VERT ]; then
+         FLIP_TYPE=$FLIP_BOTH
+      else
+         FLIP_TYPE=$FLIP_HORI
+      fi
+   elif [ "$1" == "--flip-v" ]; then
+      if [ $FLIP_TYPE -eq $FLIP_HORI ]; then
+         FLIP_TYPE=$FLIP_BOTH
+      else
+         FLIP_TYPE=$FLIP_VERT
+      fi
+   else
+      mypr "Error 33: Argument '$1' began with '--flip' but wasn't followed by '-h' or '-v'. Run this script without arguments for help."
+      exit 33
+   fi
+}
+
+# Set up rotation operation based on "--rotate" argument
+function processRotateArg()
+{
+   ROTATE_DEG=$(trim "$1" after first :)
+   if [ -z $ROTATE_DEG ] || [ $ROTATE_DEG -eq 0 ]; then
+      mypr "Error 34: Failed to parse number in '--rotate:NUM' argument or NUM was 0, which does nothing."
+      exit 34
+   fi
+}
+
 # Take apart an argument starting with "--scale" and save as operation
 function processScaleArg()
 {
    if [[ $1 == *width* ]]; then
       SCALE_WIDTH=$(trim "$1" after first :)
       SCALE_WIDTH=$(round $SCALE_WIDTH)
-      if [ -z $SCALE_WIDTH ] || [ $SCALE_WIDTH -lt 1 ]; then
+      if [ -z $SCALE_WIDTH ] || [ $SCALE_WIDTH == "NaN" ] || [ $SCALE_WIDTH -lt 1 ]; then
          mypr "Error 16: Failed to parse number in '--scale-width:NUM' argument or NUM was less than 1."
          exit 16
       fi
@@ -468,7 +520,7 @@ function processScaleArg()
    elif [[ $1 == *height* ]]; then
       SCALE_HEIGHT=$(trim "$1" after first :)
       SCALE_HEIGHT=$(round $SCALE_HEIGHT)
-      if [ -z $SCALE_HEIGHT ] || [ $SCALE_HEIGHT -lt 1 ]; then
+      if [ -z $SCALE_HEIGHT ] || [ $SCALE_HEIGHT == "NaN" ] || [ $SCALE_HEIGHT -lt 1 ]; then
          mypr "Error 17: Failed to parse number in '--scale-height:NUM' argument or NUM was less than 1."
          exit 17
       fi
@@ -480,8 +532,7 @@ function processScaleArg()
       fi
    elif [[ $1 == *percent* ]]; then
       SCALE_PERC=$(trim "$1" after first :)
-      SCALE_PERC=$(round $SCALE_PERC)
-      if [ -z $SCALE_PERC ] || [ $SCALE_PERC -lt 1 ]; then
+      if [ -z $SCALE_PERC ] || [ $SCALE_PERC == "NaN" ] || [ $SCALE_PERC -lt 1 ]; then
          mypr "Error 18: Failed to parse number in '--scale-percent:NUM' argument or NUM was less than 1."
          exit 18
       fi
@@ -525,13 +576,6 @@ function considerCopy()
 }
 
 ## CODE START ##
-# Check for ImageMagick; specifically we need 'identify' and 'convert'
-which identify > /dev/null
-if [ "$?" -ne 0 ]; then
-   mypr "Error 20: ImageMagick does not appear to be installed."
-   exit 20
-fi
-
 # The script cannot perform any action with less than three arguments, so print
 # the documentation (this also covers the case where the user guesses at an
 # argument like "--help")
@@ -550,25 +594,46 @@ while (( "$#" )); do
    fi
 
    case "$1" in
-      --in-dir )      SOURCE_DIR="$2"; shift $SAFE_2;;
-      --overwrite )   FILE_MODE=$FILE_OVERWRITE; shift;;
-      --beside )      FILE_MODE=$FILE_BESIDE; shift;;
-      --dest )        FILE_MODE=$FILE_MIRROR; DEST_DIR="$2"; shift $SAFE_2;;
-      --copy-skips )  COPY_SKIPS=1; shift;;
-      --label )       OPER_LABEL=1; shift;;
-      --convert-to* ) NEW_TYPE=$(trim "$1" after first :); OPER_CONVERT=1; shift;;
-      --crop* )       processCropArg $1; OPER_CROP=1; shift;;
-      --scale* )      processScaleArg $1; OPER_SCALE=1; shift;;
-      --only* )       processOnlyArg $1; shift;;
-      --dry-run )     DRY_RUN=1; shift;;
-      --show-skips )  SHOW_SKIPS=1; shift;;
-      * )             mypr "Error 21: Unrecognized argument '$1'."; exit 21;;
+      --in-dir )          SOURCE_DIR="$2"; shift $SAFE_2;;
+      --overwrite )       FILE_MODE=$FILE_OVERWRITE; shift;;
+      --beside )          FILE_MODE=$FILE_BESIDE; shift;;
+      --dest )            FILE_MODE=$FILE_MIRROR; DEST_DIR="$2"; shift $SAFE_2;;
+      --copy-skips )      COPY_SKIPS=1; shift;;
+      --label )           OPER_LABEL=1; shift;;
+      --convert-to* )     NEW_TYPE=$(trim "$1" after first :); OPER_CONVERT=1; shift;;
+      --crop* )           processCropArg $1; OPER_CROP=1; shift;;
+      --flip* )           processFlipArg $1; OPER_FLIP=1; shift;;
+      --rotate* )         processRotateArg $1; OPER_ROTATE=1; shift;;
+      --scale* )          processScaleArg $1; OPER_SCALE=1; shift;;
+      --only* )           processOnlyArg $1; shift;;
+      --dry-run )         DRY_RUN=1; shift;;
+      --show-skips )      SHOW_SKIPS=1; shift;;
+      --custom-identify ) BIN_IDENTIFY="$2"; shift $SAFE_2;;
+      --custom-convert )  BIN_CONVERT="$2"; shift $SAFE_2;;
+      * )                 mypr "Error 21: Unrecognized argument '$1'."; exit 21;;
    esac
 done
 
-# If no specific operation was requested, we'll just print the names to screen
-if [ $OPER_LABEL -eq 0 ] && [ $OPER_CONVERT -eq 0 ] && [ $OPER_CROP -eq 0 ] && [ $OPER_SCALE -eq 0 ]; then
-   OPER_PRINT=1
+# Check for ImageMagick
+which "$BIN_IDENTIFY" > /dev/null
+if [ "$?" -ne 0 ]; then
+   mypr "Error 20: '$BIN_IDENTIFY' is not available on the command line; ImageMagick does not appear to be installed."
+   exit 20
+fi
+which "$BIN_CONVERT" > /dev/null
+if [ "$?" -ne 0 ]; then
+   mypr "Error 20: '$BIN_CONVERT' is not available on the command line; ImageMagick does not appear to be installed."
+   exit 20
+fi
+
+# Set file change type accordingly
+if [ $OPER_CONVERT -eq 1 ] || [ $OPER_CROP -eq 1 ] || [ $OPER_FLIP -eq 1 ] || [ $OPER_ROTATE -eq 1 ] || [ $OPER_SCALE -eq 1 ]; then
+   CHANGE_TYPE=$CHANGE_MODIFY
+elif [ $OPER_LABEL -eq 1 ]; then
+   CHANGE_TYPE=$CHANGE_LABEL_ONLY
+else # in the event of no operations, just print the file names to screen
+   OPER_SEARCH=1
+   CHANGE_TYPE=$CHANGE_NONE
 fi
 
 ## SAFETY CHECKS ##
@@ -582,11 +647,9 @@ if [ ! -d "$SOURCE_DIR" ]; then
    exit 23
 fi
 
-if [ $FILE_MODE -eq 0 ]; then
-   if [ $OPER_LABEL -eq 1 ] || [ $OPER_CONVERT -eq 1 ] || [ $OPER_CROP -eq 1 ] || [ $OPER_SCALE -eq 1 ]; then
-      mypr "Error 24: Because you asked for a file operation to be performed, you need to specify the file mode with '--overwrite', '--beside', or '--dest PATH'. Run this script without arguments for help."
-      exit 24
-   fi
+if [ $FILE_MODE -eq 0 ] && [ $OPER_SEARCH -eq 0 ]; then
+   mypr "Error 24: Because you asked for a file operation to be performed, you need to specify the file mode with '--overwrite', '--beside', or '--dest PATH'. Run this script without arguments for help."
+   exit 24
 fi
 
 if [ $FILE_MODE -eq $FILE_MIRROR ]; then
@@ -601,7 +664,7 @@ if [ $FILE_MODE -eq $FILE_MIRROR ]; then
    fi
 fi
 
-if [[ $OPER_PRINT -eq 1 && ( $FILE_MODE -ne 0 || $COPY_SKIPS -ne 0 ) ]]; then
+if [[ $OPER_SEARCH -eq 1 && ( $FILE_MODE -ne 0 || $COPY_SKIPS -ne 0 ) ]]; then
    mypr "Error 27: Since you only opted to print file results rather than alter any files, you should not have specified a file operation mode."
    exit 27
 fi
@@ -685,7 +748,7 @@ fi
 
 myprb "Operations"
 
-if [ $OPER_PRINT -eq 1 ]; then
+if [ $OPER_SEARCH -eq 1 ]; then
    mypr "The names of the selected images will be printed to screen."
 fi
 
@@ -722,6 +785,20 @@ if [ $OPER_CROP -eq 1 ]; then
    fi
 
    mypr "The images will be cropped to ${CROP_DIM_STMT}${CROP_OFFSET_STMT}."
+fi
+
+if [ $OPER_FLIP -eq 1 ]; then
+   if [ $FLIP_TYPE -eq $FLIP_HORI ]; then
+      mypr "The images will be flipped horizontally."
+   elif [ $FLIP_TYPE -eq $FLIP_VERT ]; then
+      mypr "The images will be flipped vertically."
+   elif [ $FLIP_TYPE -eq $FLIP_BOTH ]; then
+      mypr "The images will be flipped horizontally and vertically."
+   fi
+fi
+
+if [ $OPER_ROTATE -eq 1 ]; then
+   mypr "The images will be rotated $ROTATE_DEG degrees."
 fi
 
 if [ $OPER_SCALE -eq 1 ]; then
@@ -797,8 +874,8 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
    fi
    
    # Get basic image info
-   IMAGE_WIDTH=$(identify -format "%[fx:w]" "$FILE_REF" 2> /dev/null)
-   IMAGE_HEIGHT=$(identify -format "%[fx:h]" "$FILE_REF" 2> /dev/null)
+   IMAGE_WIDTH=$("$BIN_IDENTIFY" -format "%[fx:w]" "$FILE_REF" 2> /dev/null)
+   IMAGE_HEIGHT=$("$BIN_IDENTIFY" -format "%[fx:h]" "$FILE_REF" 2> /dev/null)
    
    if [ $? -ne 0 ]; then
 		myprd "Skipping image '$FILE_REF' because the size could not be obtained; ImageMagick error $?."
@@ -807,14 +884,14 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
 	
 	# Animated GIFs return wildly erroneous dimensions and have not been tested with the operations this script offers, so skip them
 	if [ $FILE_SUFFIX == "gif" ]; then
-		FRAME_CT=$(identify "$FILE_REF" | wc -l | tr -d ' ')
+		FRAME_CT=$("$BIN_IDENTIFY" "$FILE_REF" | wc -l | tr -d ' ')
 		if [ $FRAME_CT -gt 1 ]; then
 			myprd "Skipping animated GIF '$FILE_REF'."
 			continue
 		fi
 	fi
 	
-	# Avoid cases where image dimensions exceed 2^32, which is 10 digits long, because bash cannot handle them; it's likely that a number this large is an error, anyway
+	# Avoid cases where image dimensions exceed 2^32, which is 10 digits long, because bash cannot handle them; it's likely that a number this large is an error anyway
 	if [ "${#IMAGE_WIDTH}" -gt 9 ] || [ "${#IMAGE_HEIGHT}" -gt 9 ]; then
 	   myprd "Skipping image '$FILE_REF' because a dimension may exceed INTMAX."
 	   continue
@@ -880,8 +957,8 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
 		fi
 	fi
 
-   # If in print mode, just print file name and continue
-   if [ $OPER_PRINT -eq 1 ]; then
+   # If in search mode, just print file name and continue
+   if [ $OPER_SEARCH -eq 1 ]; then
       REL_PATH=$(trim "$FILE_REF" after first "$SOURCE_DIR/")
       echo "Found file '$REL_PATH'."
       continue
@@ -889,6 +966,8 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
 
    CROP_ARG=""
    RESIZE_ARG=""
+   FLIP_ARG=""
+   ROTATE_ARG=""
 
    # Construct crop operation if requested
    if [ $OPER_CROP -eq 1 ]; then
@@ -935,9 +1014,25 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
          RESIZE_ARG+=" ${SCALE_PERC}%"
       fi
    fi
+   
+   # Construct flip operation if requested
+   if [ $OPER_FLIP -eq 1 ]; then
+      if [ $FLIP_TYPE -eq $FLIP_HORI ]; then
+         FLIP_ARG+=" -flop"
+      elif [ $FLIP_TYPE -eq $FLIP_VERT ]; then
+         FLIP_ARG+=" -flip"
+      elif [ $FLIP_TYPE -eq $FLIP_BOTH ]; then
+         FLIP_ARG+=" -flip -flop"
+      fi
+   fi
+   
+   # Construct rotation operation if requested; the repage command is needed to avoid an error with rotating TIFFs
+   if [ $OPER_ROTATE -eq 1 ]; then
+      ROTATE_ARG=" -rotate $ROTATE_DEG +repage"
+   fi
 
    # Assemble full call to ImageMagick
-   IM_COMMAND="convert \"$FILE_REF\"${CROP_ARG}${RESIZE_ARG}"
+   IM_COMMAND="$BIN_CONVERT \"$FILE_REF\"${CROP_ARG}${RESIZE_ARG}${FLIP_ARG}${ROTATE_ARG}"
    ALTERED_FILE_REF="$FILE_REF"
    NEW_FILE_NAME=$(basename $FILE_REF)
    if [ $FILE_MODE -eq $FILE_BESIDE ]; then
@@ -983,6 +1078,12 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
    if [ $OPER_CROP -eq 1 ]; then
       OPERATION_NAMES+=("crop")
    fi
+   if [ $OPER_FLIP -eq 1 ]; then
+      OPERATION_NAMES+=("flip")
+   fi
+   if [ $OPER_ROTATE -eq 1 ]; then
+      OPERATION_NAMES+=("rotation")
+   fi
    if [ $OPER_SCALE -eq 1 ]; then
       OPERATION_NAMES+=("scale")
    fi
@@ -990,7 +1091,7 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
       OPERATION_NAMES+=("conversion")
    fi
    if [ $OPER_LABEL -eq 1 ]; then
-      OPERATION_NAMES+=("label")
+      OPERATION_NAMES+=("labeling")
    fi
    OPERATION_STMT="Performing "
    NUM_OPS=${#OPERATION_NAMES[@]}
@@ -1009,7 +1110,7 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
    fi
 
    # Run ImageMagick command or else print command to terminal if in dry-run mode
-   if [ $OPER_CROP -eq 1 ] || [ $OPER_CONVERT -eq 1 ] || [ $OPER_SCALE -eq 1 ]; then
+   if [ $CHANGE_TYPE -eq $CHANGE_MODIFY ]; then
       if [ $DRY_RUN -eq 0 ]; then
          mypr "$OPERATION_STMT on $(basename $FILE_REF)..."
          eval $IM_COMMAND
@@ -1027,9 +1128,8 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
 
    # Label file with dimensions if requested
    if [ $OPER_LABEL -eq 1 ]; then
-      # If we didn't run an operation, there is no altered file; it's still back at
-      # $FILE_REF or $ORIG_FILE_REF
-      if [ $OPER_CROP -eq 0 ] && [ $OPER_CONVERT -eq 0 ] && [ $OPER_SCALE -eq 0 ]; then
+      # If we didn't alter the file, it's still back at $FILE_REF or $ORIG_FILE_REF
+      if [ $CHANGE_TYPE -eq $CHANGE_LABEL_ONLY ]; then
          if [ $FILE_MODE -eq $FILE_BESIDE ]; then
             ALTERED_FILE_REF="$ORIG_FILE_REF"
          else
@@ -1040,8 +1140,8 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
 
       # Get info on the image we created
       if [ $DRY_RUN -eq 0 ]; then
-         IMAGE_WIDTH=$(identify -format "%[fx:w]" "$ALTERED_FILE_REF")
-         IMAGE_HEIGHT=$(identify -format "%[fx:h]" "$ALTERED_FILE_REF")
+         IMAGE_WIDTH=$("$BIN_IDENTIFY" -format "%[fx:w]" "$ALTERED_FILE_REF")
+         IMAGE_HEIGHT=$("$BIN_IDENTIFY" -format "%[fx:h]" "$ALTERED_FILE_REF")
       else # we have to estimate the final size since the altered files won't exist
          if [ $OPER_CROP -eq 1 ]; then
             if [ $CROP_TYPE == $CROP_WIDTH_ONLY ] || [ $CROP_TYPE == $CROP_WIDTH_HEIGHT ]; then
@@ -1076,8 +1176,8 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
       LABELED_FILE_NAME=$(trim "$NEW_FILE_NAME" before last .$CURR_SUFF)
       LABELED_FILE_NAME+=" ${IMAGE_WIDTH}x${IMAGE_HEIGHT}.$CURR_SUFF"
 
-      # If we actually ran an operation, move the file to its new name with label
-      if [ $OPER_CROP -eq 1 ] || [ $OPER_CONVERT -eq 1 ] || [ $OPER_SCALE -eq 1 ]; then
+      # If we actually changed the file, move the file to its new name with label
+      if [ $CHANGE_TYPE -eq $CHANGE_MODIFY ]; then
          if [ $DRY_RUN -eq 0 ]; then
             mv "$ALTERED_FILE_REF" "$(dirname $ALTERED_FILE_REF)/$LABELED_FILE_NAME"
          else
@@ -1085,7 +1185,7 @@ for FILE_REF in $(find -s "$SOURCE_DIR" -type f); do
          fi
       # If all we're doing is labeling the files then IM never ran, so just 'cp' or
       # 'mv' the original file depending on the file mode
-      else
+      elif [ $CHANGE_TYPE -eq $CHANGE_LABEL_ONLY ]; then
          if [ $DRY_RUN -eq 0 ]; then
             if [ $FILE_MODE -eq $FILE_OVERWRITE ]; then
                mv "$FILE_REF" "$(dirname $FILE_REF)/$LABELED_FILE_NAME"
