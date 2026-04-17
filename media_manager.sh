@@ -19,8 +19,8 @@ BIN_IDENTIFY="identify"
 BIN_CONVERT="convert"
 BIN_FFMPEG="ffmpeg"
 BIN_FFPROBE="ffprobe"
-declare -a IMG_SUFF=(bmp dds gif jpeg jpg png tga tif tiff)
-declare -a MOV_SUFF=(avi mov mp4 aac aif aiff flac m4a mp3 ogg opus wav wma)
+declare -a IMG_SUFF=(bmp dds jpeg jpg png tga tif tiff)
+declare -a MOV_SUFF=(avi gif mov mp4 aac aif aiff flac m4a mp3 ogg opus wav wma)
 declare -a AUD_SUFF=(aac aif aiff flac m4a mp3 ogg opus wav wma)
 COLS=$(tput cols)
 BOLD=$(tput bold)
@@ -1237,14 +1237,18 @@ for FILE_REF in "${FILE_SET[@]}"; do
       MEDIA_HEIGHT=$(trim "$MEDIA_DIMS" after first ",")
    fi
 	
-	# Animated GIFs return wildly erroneous dimensions and have not been tested with the operations this script offers, so skip them
-	if [ $(echo $FILE_SUFFIX | tr "[:upper:]" "[:lower:]") == "gif" ]; then
-		FRAME_CT=$("$BIN_IDENTIFY" "$FILE_REF" | wc -l | tr -d ' ')
-		if [ $FRAME_CT -gt 1 ]; then
-			myprd "Skipping animated GIF '$FILE_REF'."
-			continue
-		fi
-	fi
+	# Animated GIFs return wildly erroneous dimensions and have not been tested with the operations this
+	# script offers, so skip them
+	# Update: For now I have disabled this check because I'm not sure the bug still exists, and if it does,
+	# it's only for certain GIFs, so it's better to allow the operation(s) to proceed and let the user address
+	# issues between ImageMagick and those specific GIFs
+	#if [ $(echo $FILE_SUFFIX | tr "[:upper:]" "[:lower:]") == "gif" ]; then
+	#	FRAME_CT=$("$BIN_IDENTIFY" "$FILE_REF" | wc -l | tr -d ' ')
+	#	if [ $FRAME_CT -gt 1 ]; then
+	#		myprd "Skipping animated GIF '$FILE_REF'."
+	#		continue
+	#	fi
+	#fi
 	
 	# Avoid cases where media dimensions exceed 2^32 by filtering out dimensions over 9 digits long, because
 	# bash cannot handle them; it's likely that a number this large is an error anyway
